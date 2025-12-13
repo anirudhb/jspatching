@@ -3,10 +3,11 @@
     "target": "es2024",
     "module": "esnext",
     "outDir": "out",
-    "moduleResolution": "bundler",
+    "lib": ["es2024", "dom"],
     "jsx": "react",
     "jsxFactory": "globalThis.React.createElement",
-    "jsxFragmentFactory": "globalThis.React.Fragment"
+    "jsxFragmentFactory": "globalThis.React.Fragment",
+    "composite": true
   },
   "include": ["src/**/*"]
 }
