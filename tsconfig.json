@@ -3,7 +3,10 @@
     "target": "es2024",
     "module": "esnext",
     "outDir": "out",
-    "moduleResolution": "bundler"
+    "moduleResolution": "bundler",
+    "jsx": "react",
+    "jsxFactory": "globalThis.React.createElement",
+    "jsxFragmentFactory": "globalThis.React.Fragment"
   },
   "include": ["src/**/*"]
 }
