@@ -10,7 +10,12 @@ if (globalThis.__reactComponentRegistry)
   __reactComponentRegistry = globalThis.__reactComponentRegistry;
 
 // patches for named components
-let __reactPatchRegistry = new Map<string, (c: React.FC) => React.FC>();
+type ReactPatch = {
+  patcher: (c: React.FC) => React.FC;
+  tester: (p: any) => boolean;
+};
+let __reactPatchRegistry = new Map<string, ReactPatch>();
+// component => patcher => patched
 let __reactPatchCache = new Map<React.FC, Map<any, React.FC>>();
 
 declare global {
@@ -60,30 +65,41 @@ const createElement = function(type: any, props: any, ...children: any[]) {
     type = type.__thunkValue;
   const name = typeof type === "string" ? type : getComponentName(type);
   if (__reactPatchRegistry.has(name)) {
-    type = patchOrCache(type, __reactPatchRegistry.get(name));
+    const patch = __reactPatchRegistry.get(name);
+    if (patch.tester(props)) {
+      type = patchOrCache(type, patch.patcher);
+    }
   }
   return globalThis.__real_createElement(type, props, ...children);
 } as typeof globalThis.React.createElement;
 
-/**
- * Patches the given named component and returns the revoke function.
- */
-export function patchComponent<P = {}>(name: string, patcher: (c: React.FC<P>) => React.FC<P>): () => void {
+export function patchComponentWithTester<P = {}>(name: string, tester: (p: P) => boolean, patcher: (c: React.FC<P>) => React.FC<P>): () => void {
   let revoked = false;
   const prevPatch = __reactPatchRegistry.get(name) ?? null;
+  const prevPatcher = prevPatch?.patcher ?? null;
+  const prevTester = prevPatch?.tester ?? null;
   const patcher2 = (old: React.FC<P>) => {
     let old2 = (props: P) => globalThis.__real_createElement(old, props);
+    (old2 as any).displayName = `OriginalThunk(${getComponentName(old)})`;
     if (prevPatch !== null)
-      old2 = prevPatch(old2) as any;
+      old2 = prevPatcher(old2) as any;
     if (revoked) {
       //console.log(`patcher running for ${name} ${sym.toString()} (revoked)`);
       return old2;
     } else {
       //console.log(`patcher running for ${name} ${sym.toString()} (real)`);
-      return patcher(old2);
+      const patched = patcher(old2);
+      (patched as any).displayName = `Patch(${getComponentName(old)})`;
+      return patched;
     }
   };
-  __reactPatchRegistry.set(name, patcher2);
+  const tester2 = (props: any) => {
+    return (revoked ? false : tester(props)) || (prevTester?.(props) ?? false);
+  };
+  __reactPatchRegistry.set(name, {
+    tester: tester2,
+    patcher: patcher2,
+  });
   // XXX: can't just remove the patcher entry here and restore
   // prevPatch because there could have been more patches added.
   return () => {
@@ -91,6 +107,24 @@ export function patchComponent<P = {}>(name: string, patcher: (c: React.FC<P>) =
     // FIXME: a better way to do this
     __reactPatchCache.clear();
   };
+}
+
+function trueTester(_: any): boolean {
+  return true;
+}
+
+/*
+ * patchComponentWithTester with friendlier type annotations.
+ */
+export function patchComponentWithTester2<C extends React.FC>(c: C, tester: (p: React.ComponentProps<C>) => boolean, patcher: (c: C) => (p: React.ComponentProps<C>) => C): () => void {
+  return patchComponentWithTester<React.ComponentProps<C>>(getComponentName(c), tester as any, patcher as any);
+}
+
+/**
+ * Patches the given named component and returns the revoke function.
+ */
+export function patchComponent<P = {}>(name: string, patcher: (c: React.FC<P>) => React.FC<P>): () => void {
+  return patchComponentWithTester<P>(name, trueTester, patcher);
 }
 
 /*
