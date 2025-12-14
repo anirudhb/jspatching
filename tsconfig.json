@@ -4,6 +4,7 @@
     "module": "esnext",
     "outDir": "out",
     "lib": ["es2024", "dom"],
+    "moduleResolution": "bundler",
     "jsx": "react",
     "jsxFactory": "globalThis.React.createElement",
     "jsxFragmentFactory": "globalThis.React.Fragment",
