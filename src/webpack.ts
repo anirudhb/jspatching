@@ -1,196 +1,233 @@
 /** Webpack hooking tools */
+import * as utils from "./utils";
 
 // Ref: https://gist.github.com/0xdevalias/8c621c5d09d780b1d321bfdb86d67cdd
 
-/* Discord-type */
-type _1__webpack_exports__type = {
-  exports?: Record<string, any> & {
-    default: any;
-  };
+type WebpackModuleId = {
+  chunkName: string;
+  moduleId: string;
 };
-type _1__webpack_require__type = ((n: any) => any) & {
-  c: Record<string, _1__webpack_exports__type>;
-};
-type _1_WebpackChunkInfo = {
-  type: 1;
-  chunk: any;
-  require: _1__webpack_require__type;
+type WebpackExportId = {
+  moduleId: WebpackModuleId;
+  // null indicates top-level
+  export: string | null;
 };
 
-/* Slack-type */
-type _2__webpack_exports__type = Record<string, any>;
-type _2__webpack_require__type = (n: string) => _2__webpack_exports__type;
-type _2_WebpackModuleChunkInfo = [
-  /* chunk ids */ string[],
-  /* modules */ Record<string, any>,
-  /* init function? */ undefined | Function,
-];
-type _2_WebpackChunkInfo = {
-  type: 2;
-  chunk: _2_WebpackModuleChunkInfo[];
-  require: _2__webpack_require__type;
+type WebpackPatcher = (e: any) => any;
+type WebpackPatch = {
+  // "patch name" => patcher, for removal later
+  patches: Record<string, WebpackPatcher>;
 };
 
-type WebpackChunkInfo = _1_WebpackChunkInfo | _2_WebpackChunkInfo;
-let __webpackChunkRegistry = new Map<Symbol, WebpackChunkInfo>();
-let __webpackModuleRegistry = new Map<string, any>();
+// TODO: figure out a better way to do this
 
-if (globalThis.__webpackChunkRegistry)
-  __webpackChunkRegistry = globalThis.__webpackChunkRegistry;
+function webpackModuleIdToKey(i: WebpackModuleId): string {
+  return `${i.chunkName}\x00${i.moduleId}`;
+}
+
+function webpackModuleIdFromKey(s: string): WebpackModuleId {
+  let [chunkName, moduleId] = s.split("\x00");
+  return { chunkName, moduleId };
+}
+
+function webpackExportIdToKey(i: WebpackExportId): string {
+  return `${i.moduleId.chunkName}\x00${i.moduleId.moduleId}\x00${i.export ?? "\xff"}`;
+}
+
+function webpackExportIdFromKey(s: string): WebpackExportId {
+  let [chunkName, moduleId, exp] = s.split("\x00");
+  return { moduleId: { chunkName, moduleId }, export: exp == "\xff" ? null : exp };
+}
+
+// Webpack modules (exports), keyed by their original IDs
+let __webpackModuleRegistry = new Map</*WebpackModuleId*/string, {
+  original: any;
+  proxy: any;
+}>();
+// Mappings from pretty names to actual Webpack module IDs
+let __webpackMappings = new Map<string, WebpackExportId>();
+// Patches for Webpack modules
+let __webpackPatchRegistry = new Map</*WebpackExportId*/string, WebpackPatch>();
+
 if (globalThis.__webpackModuleRegistry)
   __webpackModuleRegistry = globalThis.__webpackModuleRegistry;
+if (globalThis.__webpackMappings)
+  __webpackMappings = globalThis.__webpackMappings;
+if (globalThis.__webpackPatchRegistry)
+  __webpackPatchRegistry = globalThis.__webpackPatchRegistry;
+
+type _3type_webpack_require_type = (n: any) => any;
+type _3type_webpack_module_function = (module: any, exports: any, require: _3type_webpack_require_type) => void;
+type _3type_WebpackPushArg = [
+  /* chunk ids */ string[],
+  /* modules */ Record<string, _3type_webpack_module_function>,
+  /* init */ (require: _3type_webpack_require_type) => void,
+];
+
+function patchedProxy(id: WebpackExportId, orig: any, bounceSet: boolean = true): any {
+  //console.log(`[Rope] creating patchedProxy for ${JSON.stringify(id)} with original:`);
+  //console.log(orig);
+  const memProxy = utils.memoizeProxy(() => [__webpackPatchRegistry.get(webpackExportIdToKey(id))], (patchData) => {
+    if (!patchData)
+      return orig;
+
+    /* FIXME: what to do about patches possibly (erroneously?) modifying the original object? */
+    let final = orig;
+    for (const patch of Object.values(patchData.patches)) {
+      final = patch(final);
+    }
+    return final;
+  }, true);
+  // necessary for "sub-exports" which may just be normal props
+  return bounceSet ? utils.setBouncerProxy(memProxy, orig) : memProxy;
+}
+
+function isAllowedPatchable(x: any): boolean {
+  return (typeof x === "object" || typeof x === "function") && x !== null;
+}
 
 /**
- * Internal hooking function for 3-type webpack chunks.
+ * Patches the given webpack module from the given chunk.
  */
-function __internal_3type_hookWebpackChunk(webpackChunk: any, chunkId: any, type: WebpackChunkInfo["type"], sym?: Symbol): Symbol {
-  /* Don't double hook */
-  if (sym && __webpackChunkRegistry.has(sym))
-    return sym;
+function patchWebpackModule(moduleId: WebpackModuleId, origModule: any): any {
+  const baseId = {
+    moduleId,
+    export: null,
+  } satisfies WebpackExportId;
+  const patchedRoot = patchedProxy(baseId, origModule, /* we wrap the proxy again */ false);
+  let proxies = new Map();
+  return utils.setBouncerProxy(new Proxy(patchedRoot, {
+    get(target, p, _receiver) {
+      if (p === "__patchedModule")
+        return true;
+      const orig = Reflect.get(target, p);
+      return orig; // temp
+      const origDescriptor = Reflect.getOwnPropertyDescriptor(target, p);
 
-  let _require: any | null = null;
+      /* symbols are never exports */
+      if (typeof p === "symbol")
+        return orig;
+      /* only patch own properties */
+      if (!Object.hasOwnProperty.call(target, p))
+        return orig;
+      /* only patch configurable properties */
+      if (!(origDescriptor.configurable ?? true))
+        return orig;
 
-  webpackChunk.push([
-    /* chunk ids */ [chunkId],
-    /* modules */ {},
-    /* init function */ (U: any) => _require = U,
-  ]);
+      /* inherently not patchable */
+      if (!isAllowedPatchable(orig))
+        return orig;
 
-  const s = sym ?? Symbol(webpackChunk.toString());
-  __webpackChunkRegistry.set(s, {
-    type,
-    chunk: webpackChunk,
-    require: _require!,
+      if (proxies.has(p))
+        return proxies.get(p);
+      const pVal = patchedProxy({ ...baseId, export: p }, Reflect.get(target, p));
+      proxies.set(p, pVal);
+      return pVal;
+    },
+  }), origModule);
+}
+
+function makePatchingRequire(chunkName: string, r: _3type_webpack_require_type): _3type_webpack_require_type {
+  const r2: typeof r = (n) => {
+    const modId = {
+      chunkName,
+      moduleId: n,
+    } satisfies WebpackModuleId;
+    const modIdK = webpackModuleIdToKey(modId);
+    if (__webpackModuleRegistry.has(modIdK))
+      return __webpackModuleRegistry.get(modIdK).proxy;
+
+    const orig = r(n);
+    /* no double patches */
+    if (orig.__patchedModule === true)
+      return orig;
+    /* inherently not patchable */
+    if (!isAllowedPatchable(orig))
+      return orig;
+    //console.log(`[Rope] require is patching for chunk ${chunkName} moduleId ${n}`);
+    const patched = patchWebpackModule(modId, orig);
+    __webpackModuleRegistry.set(modIdK, {
+      original: orig,
+      proxy: patched,
+    });
+    return patched;
+  };
+  // important for things like require.O
+  return new Proxy(r, {
+    apply: (_target, thiz, args) => Reflect.apply(r2, thiz, args),
   });
-  return s;
 }
 
 /**
- * Hooks the given webpack chunk (type 1). See __internal_3type_hookWebpackChunk.
+ * Hooking function for 3-type webpack chunks (early).
+ * If globalThis[chunkName] is already defined, this is a no-op.
  */
-export function _1_hookWebpackChunk(webpackChunk: any, key?: string): Symbol {
-  return __internal_3type_hookWebpackChunk(webpackChunk, 1337, 1, key ? Symbol.for(`_1_hookWebpackChunk_${key}`) : undefined);
-}
+export function _3type_hookWebpackChunkEarly(chunkName: string) {
+  if (globalThis[chunkName])
+    return;
 
-/**
- * Hooks the given webpack chunk (type 2). See __internal_3type_hookWebpackChunk.
- */
-export function _2_hookWebpackChunk(webpackChunk: any, key?: string): Symbol {
-  return __internal_3type_hookWebpackChunk(webpackChunk, "1337", 2, key ? Symbol.for(`_2_hookWebpackChunk_${key}`) : undefined);
-}
+  let a = [];
+  let webpackPush: (...args: any[]) => any | null = null;
+  let origPush: typeof Array.prototype.push = a.push.bind(a);
 
-/**
- * Tries to find a webpack module from the given chunk (type 1) and return it.
- * Uses the given filter function and returns the first result.
- */
-function _1__chunk_tryFindWebpackModule(chunk: _1_WebpackChunkInfo, filter: (m: any) => boolean): any[] {
-  let candidates = [];
-  for (const v of Object.values(chunk.require.c)) {
-    if (v.exports && filter(v.exports.default))
-      candidates.push(v.exports.default);
-  }
-  return candidates;
-}
-
-/**
- * Tries to find a webpack module from the given chunk (type 2). See _1__chunk_tryFindWebpackModule.
- */
-function _2__chunk_tryFindWebpackModule(chunk: _2_WebpackChunkInfo, filter: (m: any) => boolean): any[] {
-  let candidates = [];
-  for (const ci of chunk.chunk) {
-    for (const mi of Object.keys(ci[1])) {
-      try {
-        const m = chunk.require(mi);
-        if (!m)
-          continue;
-        if (filter(m))
-          candidates.push(m);
-        /* try checking exports */
-        for (const v of Object.values(m))
-          if (v && filter(v))
-            candidates.push(v);
-      } catch (_) {}
+  function push2(...elements: _3type_WebpackPushArg[]): number {
+    let count = 0;
+    for (const el of elements) {
+      /* check if this has already been patched
+       * added since the original webpack push function calls this again */
+      if ((el as any).__patched || !webpackPush) {
+        count += origPush(el);
+        continue;
+      }
+      /* patch it */
+      if (el[1]) {
+        for (const k of Object.keys(el[1])) {
+          const origModule = el[1][k];
+          const patchedModule: typeof origModule = (m, e, r) => {
+            const r2 = makePatchingRequire(chunkName, r);
+            return origModule(m, e, r2);
+          };
+          el[1][k] = patchedModule;
+        }
+      }
+      if (el[2]) {
+        const origInit = el[2];
+        const patchedInit: typeof origInit = (r) => {
+          const r2 = makePatchingRequire(chunkName, r);
+          (r2 as any).__patchedRequireForInit = true;
+          return origInit(r2);
+        };
+        el[2] = patchedInit;
+      }
+      // mark as patched
+      (el as any).__patched = true;
+      // call the original push function
+      count += webpackPush(el);
     }
-  }
-  return candidates;
-}
-
-/**
- * Tries to find a webpack module from the given chunk id. See __map_tryFindWebpackModule.
- */
-function __chunkId_tryFindWebpackModule(cid: Symbol, filter: (m: any) => boolean): any[] {
-  const chunk = __webpackChunkRegistry.get(cid);
-  if (chunk === undefined)
-    return null;
-
-  if (chunk.type == 1) {
-    return _1__chunk_tryFindWebpackModule(chunk, filter);
-  } else if (chunk.type == 2) {
-    return _2__chunk_tryFindWebpackModule(chunk, filter);
+    return count;
   }
 
-  return null;
+  globalThis[chunkName] = new Proxy(a, {
+    get(target, p, _receiver) {
+      if (p !== "push")
+        return Reflect.get(target, p);
+      return push2;
+    },
+    set(target, p, newValue, _receiver) {
+      if (p !== "push")
+        return Reflect.set(target, p, newValue);
+      webpackPush = newValue;
+      return true;
+    },
+  });
 }
 
-/**
- * Tries to find a webpack module. See __map_tryFindWebpackModule.
- */
-export function tryFindWebpackModule(filter: (m: any) => boolean, all: boolean = false): any | null {
-  for (const cid of __webpackChunkRegistry.keys()) {
-    const r = __chunkId_tryFindWebpackModule(cid, filter);
-    if (r.length)
-      return all ? r : r[0];
-  }
-  return null;
-}
-
-/**
- * Populates the given module name with the given filter, if a matching module is found.
- * Returns the matched module, if any, or the existing one in the registry.
- */
-export function tryPopulateModule(name: string, filter: (m: any) => boolean): any | null {
-  const m = tryFindWebpackModule(filter);
-  if (m != null)
-    __webpackModuleRegistry.set(name, m);
-  return m ?? __webpackModuleRegistry.get(name) ?? null;
-}
-
-/*
- * Performs a require based on webpackModuleRegistry.
- * If the argument is a function, it is used as a filter function instead.
- */
-function __nothrow_webpackRequire2(arg: string | ((m: any) => boolean)): any | null {
-  if (typeof arg === "string") {
-    const m = __webpackModuleRegistry.get(arg);
-    if (m !== undefined) {
-      return m;
-    } else {
-      return null;
-    }
-  } else {
-    return tryFindWebpackModule(arg);
-  }
-}
-
-/**
- * Performs a require based on webpackModuleRegistry. See __nothrow_webpackRequire2.
- */
-export function webpackRequire2(arg: string | ((m: any) => boolean)): any {
-  const r = __nothrow_webpackRequire2(arg);
-  if (r == null)
-    throw new Error(`Module ${arg} not found`);
-  return r;
-}
-
-/** Expose on window */
+/** Expose on globalThis */
 let o = {
-  __webpackChunkRegistry,
   __webpackModuleRegistry,
-  _1_hookWebpackChunk,
-  _2_hookWebpackChunk,
-  tryFindWebpackModule,
-  tryPopulateModule,
-  webpackRequire2,
+  __webpackMappings,
+  __webpackPatchRegistry,
+  _3type_hookWebpackChunkEarly,
 };
 
 for (const [k, v] of Object.entries(o)) {
