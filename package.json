@@ -2,6 +2,7 @@
 	"name": "jspatching",
 	"module": true,
 	"exports": {
+		"./utils": "./src/utils.ts",
 		"./webpack": "./src/webpack.ts",
 		"./react": "./src/react.ts"
 	},
