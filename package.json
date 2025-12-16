@@ -4,10 +4,12 @@
 	"exports": {
 		"./utils": "./src/utils.ts",
 		"./webpack": "./src/webpack.ts",
-		"./react": "./src/react.ts"
+		"./react": "./src/react.ts",
+		"./redux": "./src/redux.ts"
 	},
 	"dependencies": {
 		"@types/react": "^19.2.7",
-		"@types/react-dom": "^19.2.3"
+		"@types/react-dom": "^19.2.3",
+		"redux": "^5.0.1"
 	}
 }
