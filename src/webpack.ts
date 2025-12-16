@@ -16,7 +16,7 @@ type WebpackExportId = {
 type WebpackPatcher = (e: any) => any;
 type WebpackPatch = {
   // "patch name" => patcher, for removal later
-  patches: Record<string, WebpackPatcher>;
+  patches: Map<string, WebpackPatcher>;
 };
 
 // TODO: figure out a better way to do this
@@ -30,24 +30,27 @@ function webpackModuleIdFromKey(s: string): WebpackModuleId {
   return { chunkName, moduleId };
 }
 
-function webpackExportIdToKey(i: WebpackExportId): string {
-  return `${i.moduleId.chunkName}\x00${i.moduleId.moduleId}\x00${i.export ?? "\xff"}`;
+function webpackModuleIdEqual(x1?: WebpackModuleId, x2?: WebpackModuleId): boolean {
+  return x1 && x2 && x1.chunkName === x2.chunkName && x1.moduleId === x2.moduleId;
 }
 
-function webpackExportIdFromKey(s: string): WebpackExportId {
-  let [chunkName, moduleId, exp] = s.split("\x00");
-  return { moduleId: { chunkName, moduleId }, export: exp == "\xff" ? null : exp };
-}
-
-// Webpack modules (exports), keyed by their original IDs
-let __webpackModuleRegistry = new Map</*WebpackModuleId*/string, {
+type WebpackModuleInfo = {
   original: any;
   proxy: any;
-}>();
+};
+
+// Webpack modules (exports), keyed by their original IDs
+let __webpackModuleRegistry = new Map</*WebpackModuleId*/string, WebpackModuleInfo>();
 // Mappings from pretty names to actual Webpack module IDs
 let __webpackMappings = new Map<string, WebpackExportId>();
 // Patches for Webpack modules
-let __webpackPatchRegistry = new Map</*WebpackExportId*/string, WebpackPatch>();
+// module id => export | null (toplevel) => WebpackPatch
+let __webpackPatchRegistry = new Map</*WebpackModuleId*/string, Map<string | null, WebpackPatch>>();
+
+// Early module catchers that run with original id and modules
+// Entries are removed once they return true
+// Note that this runs *before* patching so this can be used to patch the very first require of a module
+let __webpackEarlyCatchers = new Map<symbol, (id: WebpackModuleId, m: any) => boolean>();
 
 if (globalThis.__webpackModuleRegistry)
   __webpackModuleRegistry = globalThis.__webpackModuleRegistry;
@@ -55,6 +58,8 @@ if (globalThis.__webpackMappings)
   __webpackMappings = globalThis.__webpackMappings;
 if (globalThis.__webpackPatchRegistry)
   __webpackPatchRegistry = globalThis.__webpackPatchRegistry;
+if (globalThis.__webpackEarlyCatchers)
+  __webpackEarlyCatchers = globalThis.__webpackEarlyCatchers;
 
 type _3type_webpack_require_type = (n: any) => any;
 type _3type_webpack_module_function = (module: any, exports: any, require: _3type_webpack_require_type) => void;
@@ -64,24 +69,6 @@ type _3type_WebpackPushArg = [
   /* init */ (require: _3type_webpack_require_type) => void,
 ];
 
-function patchedProxy(id: WebpackExportId, orig: any, bounceSet: boolean = true): any {
-  //console.log(`[Rope] creating patchedProxy for ${JSON.stringify(id)} with original:`);
-  //console.log(orig);
-  const memProxy = utils.memoizeProxy(() => [__webpackPatchRegistry.get(webpackExportIdToKey(id))], (patchData) => {
-    if (!patchData)
-      return orig;
-
-    /* FIXME: what to do about patches possibly (erroneously?) modifying the original object? */
-    let final = orig;
-    for (const patch of Object.values(patchData.patches)) {
-      final = patch(final);
-    }
-    return final;
-  }, true);
-  // necessary for "sub-exports" which may just be normal props
-  return bounceSet ? utils.setBouncerProxy(memProxy, orig) : memProxy;
-}
-
 function isAllowedPatchable(x: any): boolean {
   return (typeof x === "object" || typeof x === "function") && x !== null;
 }
@@ -90,41 +77,48 @@ function isAllowedPatchable(x: any): boolean {
  * Patches the given webpack module from the given chunk.
  */
 function patchWebpackModule(moduleId: WebpackModuleId, origModule: any): any {
-  const baseId = {
-    moduleId,
-    export: null,
-  } satisfies WebpackExportId;
-  const patchedRoot = patchedProxy(baseId, origModule, /* we wrap the proxy again */ false);
-  let proxies = new Map();
-  return utils.setBouncerProxy(new Proxy(patchedRoot, {
+  const moduleIdK = webpackModuleIdToKey(moduleId);
+  const patched = utils.memoizeProxy<any, [Map<string | null, WebpackPatch>, ...string[]]>(() => {
+    const p = __webpackPatchRegistry.get(moduleIdK);
+    return [p, ...(p?.keys() ?? [])];
+  }, (patchMap, ..._keys) => {
+    if (!patchMap)
+      return origModule;
+
+    let final = origModule;
+    let rootPatchData = patchMap.get(null);
+    if (rootPatchData) {
+      for (const p of rootPatchData.patches.values())
+        final = p(final);
+    }
+    for (const [k, v] of patchMap.entries()) {
+      if (k === null)
+        continue;
+      for (const p of v.patches.values()) {
+        console.log(`[Rope] patchModule for moduleId=`, moduleId, ` prop=`, k, ` running patch `, p.name);
+        const patched = p(final[k]);
+        /* don't modify the original object */
+        final = new Proxy(final, {
+          get(target, prop, _receiver) {
+            if (prop === k)
+              return patched;
+            return Reflect.get(target, prop);
+          },
+        });
+      }
+    }
+    return final;
+  });
+  /* mark as patched */
+  const patchedWithMark = new Proxy(patched, {
     get(target, p, _receiver) {
-      if (p === "__patchedModule")
-        return true;
-      const orig = Reflect.get(target, p);
-      return orig; // temp
-      const origDescriptor = Reflect.getOwnPropertyDescriptor(target, p);
-
-      /* symbols are never exports */
-      if (typeof p === "symbol")
-        return orig;
-      /* only patch own properties */
-      if (!Object.hasOwnProperty.call(target, p))
-        return orig;
-      /* only patch configurable properties */
-      if (!(origDescriptor.configurable ?? true))
-        return orig;
-
-      /* inherently not patchable */
-      if (!isAllowedPatchable(orig))
-        return orig;
-
-      if (proxies.has(p))
-        return proxies.get(p);
-      const pVal = patchedProxy({ ...baseId, export: p }, Reflect.get(target, p));
-      proxies.set(p, pVal);
-      return pVal;
+      if (p === "__patchedModule") {
+        return { moduleId, origModule };
+      }
+      return Reflect.get(target, p);
     },
-  }), origModule);
+  });
+  return utils.setBouncerProxy(patchedWithMark, origModule);
 }
 
 function makePatchingRequire(chunkName: string, r: _3type_webpack_require_type): _3type_webpack_require_type {
@@ -138,9 +132,15 @@ function makePatchingRequire(chunkName: string, r: _3type_webpack_require_type):
       return __webpackModuleRegistry.get(modIdK).proxy;
 
     const orig = r(n);
-    /* no double patches */
-    if (orig.__patchedModule === true)
-      return orig;
+    // seems to be unnecessary
+    //if (webpackModuleIdEqual(orig.__patchedModule?.moduleId, modId))
+    //  return orig;
+
+    /* run early catchers */
+    for (const [k, v] of __webpackEarlyCatchers.entries())
+      if (v(modId, orig))
+        __webpackEarlyCatchers.delete(k);
+
     /* inherently not patchable */
     if (!isAllowedPatchable(orig))
       return orig;
@@ -194,7 +194,6 @@ export function _3type_hookWebpackChunkEarly(chunkName: string) {
         const origInit = el[2];
         const patchedInit: typeof origInit = (r) => {
           const r2 = makePatchingRequire(chunkName, r);
-          (r2 as any).__patchedRequireForInit = true;
           return origInit(r2);
         };
         el[2] = patchedInit;
@@ -222,12 +221,197 @@ export function _3type_hookWebpackChunkEarly(chunkName: string) {
   });
 }
 
+export type FoundWebpackExport = {
+  id: WebpackExportId;
+  // The original export
+  export: any;
+  // Patched proxy of the toplevel module this export is part of
+  parentProxy: any;
+};
+
+/**
+ * Finds an (original) export by a filter function.
+ */
+export function tryFindWebpackExport(filter: (m: any) => boolean, all: true): FoundWebpackExport[];
+export function tryFindWebpackExport(filter: (m: any) => boolean, all?: boolean): FoundWebpackExport | null;
+export function tryFindWebpackExport(filter: (m: any) => boolean, all: boolean = false): FoundWebpackExport[] | FoundWebpackExport | null {
+  let candidates: FoundWebpackExport[] = [];
+  for (const [moduleIdK, module] of __webpackModuleRegistry.entries()) {
+    const moduleId = webpackModuleIdFromKey(moduleIdK);
+    const orig = module.original;
+    if (filter(orig)) {
+      candidates.push({
+        id: { moduleId, export: null },
+        export: orig,
+        parentProxy: module.proxy,
+      });
+    }
+    for (const [k, v] of Object.entries(orig))
+      if (filter(v))
+        candidates.push({
+          id: { moduleId, export: k },
+          export: v,
+          parentProxy: module.proxy,
+        });
+  }
+  return all === true ? candidates : candidates.at(0) ?? null;
+}
+
+/**
+ * Inserts a patch with the given name for the given export.
+ * If you just want to modify a single property of a top-level export,
+ * you *should* pass an exportId with export=that property's key.
+ */
+export function insertWebpackPatch<T = any>(exportId: WebpackExportId, name: string, patch: (x: T) => T) {
+  const { moduleId, export: exp } = exportId;
+  const moduleIdK = webpackModuleIdToKey(moduleId);
+  if (!__webpackPatchRegistry.has(moduleIdK))
+    __webpackPatchRegistry.set(moduleIdK, new Map());
+  let modulePatchMap = __webpackPatchRegistry.get(moduleIdK);
+  if (!modulePatchMap.has(exp))
+    modulePatchMap.set(exp, { patches: new Map() });
+  let exportPatchMap = modulePatchMap.get(exp);
+  exportPatchMap.patches.set(name, patch);
+}
+
+/**
+ * Deletes a patch with the given name for the given export.
+ * Returns true if the patch was present.
+ */
+export function deleteWebpackPatch(exportId: WebpackExportId, name: string): boolean {
+  const { moduleId, export: exp } = exportId;
+  const moduleIdK = webpackModuleIdToKey(moduleId);
+  const modulePatchMap = __webpackPatchRegistry.get(moduleIdK);
+  if (!modulePatchMap)
+    return false;
+  const exportPatchMap = modulePatchMap.get(exp);
+  if (!exportPatchMap)
+    return false;
+  return exportPatchMap.patches.delete(name);
+}
+
+/**
+ * Populates the given pretty name with the given matcher.
+ * If a module cannot be found when this function is called,
+ * an early catcher is added.
+ *
+ * Returns a factory that allows registering callbacks to be run once the module is populated.
+ * If the module was already found, the callbacks are run immediately.
+ */
+export function earlyPopulatePrettyWebpackExport(name: string, matcher: (m: any) => boolean): (cb: (i: WebpackExportId) => void) => void {
+  const existing = tryFindWebpackExport(matcher);
+  if (existing) {
+    __webpackMappings.set(name, existing.id);
+    return (x) => { x(existing.id); };
+  }
+  let callbacks = [];
+  let foundId: WebpackExportId | null = null;
+  const catcher = (modId: WebpackModuleId, m: any) => {
+    let finalId: WebpackExportId | null = null;
+    // check root
+    if (matcher(m))
+      finalId = { moduleId: modId, export: null };
+    // check props, but try to be graceful
+    if (finalId === null)
+      for (const k of Object.keys(m)) {
+        try {
+          const v = m[k];
+          if (matcher(v)) {
+            finalId = { moduleId: modId, export: k };
+            break;
+          }
+        } catch {}
+      }
+    if (finalId === null) {
+      return false;
+    } else {
+      /* set */
+      __webpackMappings.set(name, finalId);
+      /* run callbacks */
+      foundId = finalId;
+      for (const cb of callbacks) {
+        cb(finalId);
+      }
+      callbacks.length = 0;
+      return true;
+    }
+  };
+  const s = Symbol(`webpack-early-catcher-${name}-${matcher}`);
+  __webpackEarlyCatchers.set(s, catcher);
+  return (x) => {
+    if (foundId !== null) {
+      x(foundId);
+    } else {
+      callbacks.push(x);
+    }
+  };
+}
+
+/**
+ * Looks up a Webpack module by id.
+ */
+export function findWebpackModule(id: WebpackModuleId): WebpackModuleInfo | null {
+  const idK = webpackModuleIdToKey(id);
+  return __webpackModuleRegistry.get(idK) ?? null;
+}
+
+/**
+ * Looks up a Webpack export by id.
+ */
+export function findWebpackExport(id: WebpackExportId): FoundWebpackExport | null {
+  const m = findWebpackModule(id.moduleId);
+  if (!m)
+    return null;
+  const v = id.export === null ? m.original : m.original[id.export];
+  return {
+    id,
+    export: v,
+    parentProxy: m.proxy,
+  };
+};
+
+/**
+ * Looks up a Webpack export by pretty name.
+ */
+export function prettyFindWebpackExport(name: string): FoundWebpackExport | null {
+  const id = __webpackMappings.get(name);
+  if (!id)
+    return null;
+  return findWebpackExport(id);
+}
+
+/**
+ * Returns a virtual reference to a possibly unpopulated pretty Webpack export.
+ * Using this reference before the export is present will likely throw an error.
+ */
+export function virtualPrettyWebpackExport<T = any>(name: string): T {
+  return utils.forwardingProxy(() => prettyFindWebpackExport(name)?.export);
+}
+
+/**
+ * Populates a Webpack export and returns a virtual reference to it.
+ */
+export function virtualPopulatePrettyWebpackExport<T = any>(name: string, matcher: (m: any) => boolean): T {
+  earlyPopulatePrettyWebpackExport(name, matcher);
+  return virtualPrettyWebpackExport<T>(name);
+}
+
 /** Expose on globalThis */
 let o = {
   __webpackModuleRegistry,
   __webpackMappings,
   __webpackPatchRegistry,
+  __webpackEarlyCatchers,
   _3type_hookWebpackChunkEarly,
+  tryFindWebpackExport,
+  insertWebpackPatch,
+  deleteWebpackPatch,
+  earlyPopulatePrettyWebpackExport,
+  findWebpackModule,
+  findWebpackExport,
+  prettyFindWebpackExport,
+  virtualPrettyWebpackExport,
+  virtualPopulatePrettyWebpackExport,
 };
 
 for (const [k, v] of Object.entries(o)) {

@@ -23,18 +23,39 @@ declare global {
 }
 
 export function init() {
+  // FIXME: this doesn't need an init function
+
   /* Populate modules */
-  globalThis.React = webpack.tryPopulateModule("react", m => m.createElement || m.Component || m.useState) as typeof import("react");
-  const dom1 = webpack.tryPopulateModule("react-dom", m => m.render || m.createPortal);
-  const dom2 = webpack.tryPopulateModule("react-dom/client", m => m.createRoot || m.hydrateRoot);
+  globalThis.React = utils.overlayProxy([
+    { createElement },
+    webpack.virtualPrettyWebpackExport("react"),
+  ]) as typeof import("react");
+  const dom1 = webpack.virtualPopulatePrettyWebpackExport("react-dom", m => m.render || m.createPortal);
+  const dom2 = webpack.virtualPopulatePrettyWebpackExport("react-dom/client", m => m.createRoot || m.hydrateRoot);
   globalThis._ReactDOM = dom1;
   globalThis._ReactDOMClient = dom2;
-  globalThis.ReactDOM = {...dom1, ...dom2} as typeof import("react-dom") & typeof import("react-dom/client");
+  globalThis.ReactDOM = utils.overlayProxy([dom1, dom2]) as typeof import("react-dom") & typeof import("react-dom/client");
 
   /* Save createElement */
-  globalThis.__real_createElement = globalThis.React.createElement;
-  /* Hook */
-  globalThis.React.createElement = createElement;
+  globalThis.__real_createElement = utils.forwardingProxy(() => globalThis.React.createElement);
+  /* Populate and hook React */
+  let cbFactory = webpack.earlyPopulatePrettyWebpackExport("react", m => m.createElement || m.Component || m.useState);
+  cbFactory((i) => {
+    /* Require that a module was found */
+    if (i.export !== null) {
+      throw new Error("React export was not a top-level module!");
+    }
+    /* fix-up React and "real createElement" a little later - XXX: hacky */
+    setTimeout(() => {
+      globalThis.React = webpack.findWebpackExport(i).export;
+      globalThis.__real_createElement = globalThis.React.createElement;
+      // VERY important for devirtualizing components
+      globalThis.React = { ...globalThis.React, createElement };
+    }, 100);
+
+    /* Hook createElement */
+    webpack.insertWebpackPatch({ ...i, export: "createElement" }, "jspatching/react", (_) => createElement);
+  });
 }
 
 function patchOrCache(x: React.FC, patcher: (c: React.FC) => React.FC): React.FC {
@@ -155,7 +176,7 @@ export function getComponentName(c: any): string | null {
  * Tries to find a webpack module whose default export is a React component by the given name.
  */
 export function tryFindReactComponent<P = {}>(name: string): React.FC<P> | null {
-  return webpack.tryFindWebpackModule(m => getComponentName(m) === name);
+  return webpack.tryFindWebpackExport(m => getComponentName(m) === name)?.export;
 }
 
 /**
@@ -173,10 +194,10 @@ export function tryPopulateReactComponent<P = {}>(name: string): React.FC<P> | n
 
 /**
  * Thunk dispenser that creates virtual components by name.
+ * Names are populated early.
  */
 export function virtualComponent<P = {}>(name: string): React.FC<P> {
-  //return (props) => globalThis.React.createElement(`Component\$${name}`, props);
-  return utils.forwardingProxy(() => tryPopulateReactComponent(name));
+  return utils.forwardingProxy(() => tryPopulateReactComponent(name) ?? { displayName: name } as any);
 }
 
 /** Expose on window */
