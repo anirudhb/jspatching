@@ -113,7 +113,29 @@ function patchWebpackModule(moduleId: WebpackModuleId, origModule: any): any {
       return Reflect.get(target, p);
     },
   });
-  return utils.setBouncerProxy(patchedWithMark, origModule, true);
+  const p = utils.setBouncerProxy(patchedWithMark, origModule, true);
+  /* patch defineProperty so that getters run patches */
+  return new Proxy(p, {
+    defineProperty: (target, prop, attrs) => {
+      if (attrs.get && typeof prop === "string") {
+        const origGet = attrs.get;
+        attrs.get = () => {
+          return utils.memoizeProxy<any, [any, WebpackPatch]>(() => {
+            return [origGet(), __webpackPatchRegistry.get(moduleIdK)?.get(prop)];
+          }, (orig, patch) => {
+            if (!patch)
+              return orig;
+
+            let final = orig;
+            for (const v of patch.patches.values())
+              final = v(final);
+            return final;
+          });
+        };
+      }
+      return Reflect.defineProperty(target, prop, attrs);
+    },
+  });
 }
 
 function makePatchingRequire(chunkName: string, r: _3type_webpack_require_type): _3type_webpack_require_type {
