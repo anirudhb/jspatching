@@ -82,7 +82,7 @@ export function memoizeProxy<
  * Creates a proxy that forwards all set ops to the given object.
  * !!! WARNING !!! This may cause inconsistent behavior
  */
-export function setBouncerProxy<T extends object = any>(target: T, setter: T): T {
+export function setBouncerProxy<T extends object = any>(target: T, setter: T, forceConfigurable: boolean = false): T {
   //let bindCache = new WeakMap();
   return new Proxy(target, {
     // FIXME: is this needed?
@@ -108,7 +108,11 @@ export function setBouncerProxy<T extends object = any>(target: T, setter: T): T
     //  }
     //  return x;
     //},
-    defineProperty: (_target, prop, attrs) => Reflect.defineProperty(setter, prop, attrs),
+    defineProperty: (_target, prop, attrs) => {
+      if (forceConfigurable)
+        attrs.configurable = true;
+      return Reflect.defineProperty(setter, prop, attrs);
+    },
     deleteProperty: (_target, p) => Reflect.deleteProperty(setter, p),
     isExtensible: (_target) => Reflect.isExtensible(setter),
     preventExtensions: (_target) => Reflect.preventExtensions(setter),

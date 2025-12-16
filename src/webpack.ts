@@ -113,7 +113,7 @@ function patchWebpackModule(moduleId: WebpackModuleId, origModule: any): any {
       return Reflect.get(target, p);
     },
   });
-  return utils.setBouncerProxy(patchedWithMark, origModule);
+  return utils.setBouncerProxy(patchedWithMark, origModule, true);
 }
 
 function makePatchingRequire(chunkName: string, r: _3type_webpack_require_type): _3type_webpack_require_type {
@@ -190,7 +190,9 @@ export function _3type_hookWebpackChunkEarly(chunkName: string) {
           const origModule = el[1][k];
           const patchedModule: typeof origModule = (m, e, r) => {
             const r2 = makePatchingRequire(chunkName, r);
-            return origModule(m, e, r2);
+            /* don't allow setting non-configurable props on exports as they cannot be overriden later */
+            const e2 = utils.setBouncerProxy(e, e, true);
+            return origModule(m, e2, r2);
           };
           el[1][k] = patchedModule;
         }
