@@ -123,6 +123,8 @@ export function setBouncerProxy<T extends object = any>(target: T, setter: T): T
  * Miscellany like function calls forward to the last object.
  */
 export function overlayProxy<T extends object = any>(objects: T[], hide: boolean = false): T {
+  if (objects.length === 1)
+    return objects[0];
   return new Proxy<T>(objects[objects.length-1], {
     /* pass through apply and construct, they should throw */
     defineProperty: (target, prop, attrs) => false,

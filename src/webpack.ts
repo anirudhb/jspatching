@@ -92,23 +92,17 @@ function patchWebpackModule(moduleId: WebpackModuleId, origModule: any): any {
       for (const p of rootPatchData.patches.values())
         final = p(final);
     }
+    let overlays = [final];
     for (const [k, v] of patchMap.entries()) {
       if (k === null)
         continue;
       for (const p of v.patches.values()) {
-        console.log(`[Rope] patchModule for moduleId=`, moduleId, ` prop=`, k, ` running patch `, p.name);
         const patched = p(final[k]);
-        /* don't modify the original object */
-        final = new Proxy(final, {
-          get(target, prop, _receiver) {
-            if (prop === k)
-              return patched;
-            return Reflect.get(target, prop);
-          },
-        });
+        overlays.push({ [k]: patched });
       }
     }
-    return final;
+    overlays.reverse();
+    return utils.overlayProxy(overlays);
   });
   /* mark as patched */
   const patchedWithMark = new Proxy(patched, {
