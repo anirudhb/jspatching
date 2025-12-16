@@ -48,9 +48,10 @@ let __webpackMappings = new Map<string, WebpackExportId>();
 let __webpackPatchRegistry = new Map</*WebpackModuleId*/string, Map<string | null, WebpackPatch>>();
 
 // Early module catchers that run with original id and modules
-// Entries are removed once they return true
+// Entries are removed once they return a non-falsey value.
+// If a function is returned, it is invoked right after patching - NOTE these only get called if the module is patchable.
 // Note that this runs *before* patching so this can be used to patch the very first require of a module
-let __webpackEarlyCatchers = new Map<symbol, (id: WebpackModuleId, m: any) => boolean>();
+let __webpackEarlyCatchers = new Map<symbol, (id: WebpackModuleId, m: any) => boolean | (() => void)>();
 
 if (globalThis.__webpackModuleRegistry)
   __webpackModuleRegistry = globalThis.__webpackModuleRegistry;
@@ -137,9 +138,14 @@ function makePatchingRequire(chunkName: string, r: _3type_webpack_require_type):
     //  return orig;
 
     /* run early catchers */
-    for (const [k, v] of __webpackEarlyCatchers.entries())
-      if (v(modId, orig))
+    let postCallbacks = [];
+    for (const [k, v] of __webpackEarlyCatchers.entries()) {
+      const r = v(modId, orig);
+      if (r)
         __webpackEarlyCatchers.delete(k);
+      if (typeof r === "function")
+        postCallbacks.push(r);
+    }
 
     /* inherently not patchable */
     if (!isAllowedPatchable(orig))
@@ -150,6 +156,11 @@ function makePatchingRequire(chunkName: string, r: _3type_webpack_require_type):
       original: orig,
       proxy: patched,
     });
+
+    /* run post-callbacks from early catchers */
+    for (const cb of postCallbacks)
+      cb();
+
     return patched;
   };
   // important for things like require.O
@@ -298,13 +309,18 @@ export function deleteWebpackPatch(exportId: WebpackExportId, name: string): boo
  * Returns a factory that allows registering callbacks to be run once the module is populated.
  * If the module was already found, the callbacks are run immediately.
  */
-export function earlyPopulatePrettyWebpackExport(name: string, matcher: (m: any) => boolean): (cb: (i: WebpackExportId) => void) => void {
+export function earlyPopulatePrettyWebpackExport(name: string, matcher: (m: any) => boolean): {
+  pre: (cb: (i: WebpackExportId) => void) => void;
+  post: (cb: (i: WebpackExportId) => void) => void;
+} {
   const existing = tryFindWebpackExport(matcher);
   if (existing) {
     __webpackMappings.set(name, existing.id);
-    return (x) => { x(existing.id); };
+    const f = (x: any) => { x(existing.id); };
+    return { pre: f, post: f };
   }
-  let callbacks = [];
+  let preCallbacks = [];
+  let postCallbacks = [];
   let foundId: WebpackExportId | null = null;
   const catcher = (modId: WebpackModuleId, m: any) => {
     let finalId: WebpackExportId | null = null;
@@ -329,21 +345,34 @@ export function earlyPopulatePrettyWebpackExport(name: string, matcher: (m: any)
       __webpackMappings.set(name, finalId);
       /* run callbacks */
       foundId = finalId;
-      for (const cb of callbacks) {
+      for (const cb of preCallbacks) {
         cb(finalId);
       }
-      callbacks.length = 0;
-      return true;
+      preCallbacks.length = 0;
+      return () => {
+        for (const cb of postCallbacks) {
+          cb(finalId);
+        }
+      };
     }
   };
   const s = Symbol(`webpack-early-catcher-${name}-${matcher}`);
   __webpackEarlyCatchers.set(s, catcher);
-  return (x) => {
-    if (foundId !== null) {
-      x(foundId);
-    } else {
-      callbacks.push(x);
-    }
+  return {
+    pre: (x) => {
+      if (foundId !== null) {
+        x(foundId);
+      } else {
+        preCallbacks.push(x);
+      }
+    },
+    post: (x) => {
+      if (foundId !== null) {
+        x(foundId);
+      } else {
+        postCallbacks.push(x);
+      }
+    },
   };
 }
 

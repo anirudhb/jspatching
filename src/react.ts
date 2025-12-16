@@ -39,22 +39,21 @@ export function init() {
   /* Save createElement */
   globalThis.__real_createElement = utils.forwardingProxy(() => globalThis.React.createElement);
   /* Populate and hook React */
-  let cbFactory = webpack.earlyPopulatePrettyWebpackExport("react", m => m.createElement || m.Component || m.useState);
-  cbFactory((i) => {
+  let { pre, post } = webpack.earlyPopulatePrettyWebpackExport("react", m => m.createElement || m.Component || m.useState);
+  pre((i) => {
     /* Require that a module was found */
     if (i.export !== null) {
       throw new Error("React export was not a top-level module!");
     }
-    /* fix-up React and "real createElement" a little later - XXX: hacky */
-    setTimeout(() => {
-      globalThis.React = webpack.findWebpackExport(i).export;
-      globalThis.__real_createElement = globalThis.React.createElement;
-      // VERY important for devirtualizing components
-      globalThis.React = { ...globalThis.React, createElement };
-    }, 100);
 
     /* Hook createElement */
     webpack.insertWebpackPatch({ ...i, export: "createElement" }, "jspatching/react", (_) => createElement);
+  });
+  post((i) => {
+    /* fix-up React and createElement */
+    const e = webpack.findWebpackExport(i);
+    globalThis.__real_createElement = e.export.createElement;
+    globalThis.React = e.parentProxy;
   });
 }
 
