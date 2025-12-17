@@ -133,12 +133,17 @@ export function registerPrettyReduxMatcher(storeName: string, matcher: ReduxMatc
 
 /**
  * Inserts a reducer patch with the given name for the given store.
+ *
+ * Returns a function that deletes the patch by key, equivalent to calling deleteReduxReducerPatch.
  */
-export function insertReduxReducerPatch<S = any, A extends redux.Action = redux.UnknownAction>(storeName: string, name: string, patcher: ReduxReducerPatch<S, A>) {
+export function insertReduxReducerPatch<S = any, A extends redux.Action = redux.UnknownAction>(storeName: string, name: string, patcher: ReduxReducerPatch<S, A>): () => void {
   if (!__reduxPatchRegistry.has(storeName))
     __reduxPatchRegistry.set(storeName, { reducerPatches: new Map() });
   const p = __reduxPatchRegistry.get(storeName);
   p.reducerPatches.set(name, patcher);
+  return () => {
+    deleteReduxReducerPatch(storeName, name);
+  };
 }
 
 /**
