@@ -290,8 +290,9 @@ export function tryFindWebpackExport(filter: (m: any) => boolean, all: boolean =
  * Inserts a patch with the given name for the given export.
  * If you just want to modify a single property of a top-level export,
  * you *should* pass an exportId with export=that property's key.
+ * Returns a function that deletes the patch by key, equivalent to calling deleteWebpackPatch.
  */
-export function insertWebpackPatch<T = any>(exportId: WebpackExportId, name: string, patch: (x: T) => T) {
+export function insertWebpackPatch<T = any>(exportId: WebpackExportId, name: string, patch: (x: T) => T): () => void {
   const { moduleId, export: exp } = exportId;
   const moduleIdK = webpackModuleIdToKey(moduleId);
   if (!__webpackPatchRegistry.has(moduleIdK))
@@ -301,6 +302,9 @@ export function insertWebpackPatch<T = any>(exportId: WebpackExportId, name: str
     modulePatchMap.set(exp, { patches: new Map() });
   let exportPatchMap = modulePatchMap.get(exp);
   exportPatchMap.patches.set(name, patch);
+  return () => {
+    deleteWebpackPatch(exportId, name);
+  };
 }
 
 /**
