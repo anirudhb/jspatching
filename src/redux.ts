@@ -1,4 +1,5 @@
 /** Redux patching tools */
+import * as utils from "./utils";
 import * as webpack from "./webpack";
 import type * as redux from "redux";
 
@@ -155,6 +156,13 @@ export function deleteReduxReducerPatch(storeName: string, name: string): boolea
   if (!p)
     return false;
   return p.reducerPatches.delete(name);
+}
+
+/**
+ * Returns a virtual ref to the Redux store by the given pretty name.
+ */
+export function virtualPrettyReduxStore(storeName: string): redux.Store {
+  return utils.forwardingProxy(() => __reduxStoreRegistry.get(storeName));
 }
 
 /** Expose on window */
