@@ -120,8 +120,9 @@ function patchWebpackModule(moduleId: WebpackModuleId, origModule: any): any {
       if (attrs.get && typeof prop === "string") {
         const origGet = attrs.get;
         attrs.get = () => {
-          return utils.memoizeProxy<any, [any, WebpackPatch]>(() => {
-            return [origGet(), __webpackPatchRegistry.get(moduleIdK)?.get(prop)];
+          return utils.memoizeProxy<any, [any, WebpackPatch, ...string[]]>(() => {
+            const p = __webpackPatchRegistry.get(moduleIdK)?.get(prop);
+            return [origGet(), p, ...p.patches.keys()];
           }, (orig, patch) => {
             if (!patch)
               return orig;
