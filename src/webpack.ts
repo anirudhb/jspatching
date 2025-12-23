@@ -46,6 +46,9 @@ let __webpackMappings = new Map<string, WebpackExportId>();
 // Patches for Webpack modules
 // module id => export | null (toplevel) => WebpackPatch
 let __webpackPatchRegistry = new Map</*WebpackModuleId*/string, Map<string | null, WebpackPatch>>();
+// Canaries for Webpack patches
+// Values are replaced with non-equivalent objects when the patch registry for that key changes
+let __webpackPatchCanaries = new Map</*WebpackModuleId*/string, any>();
 
 // Early module catchers that run with original id and modules
 // Entries are removed once they return a non-falsey value.
@@ -59,6 +62,8 @@ if (globalThis.__webpackMappings)
   __webpackMappings = globalThis.__webpackMappings;
 if (globalThis.__webpackPatchRegistry)
   __webpackPatchRegistry = globalThis.__webpackPatchRegistry;
+if (globalThis.__webpackPatchCanaries)
+  __webpackPatchCanaries = globalThis.__webpackPatchCanaries;
 if (globalThis.__webpackEarlyCatchers)
   __webpackEarlyCatchers = globalThis.__webpackEarlyCatchers;
 
@@ -79,64 +84,226 @@ function isAllowedPatchable(x: any): boolean {
  */
 function patchWebpackModule(moduleId: WebpackModuleId, origModule: any): any {
   const moduleIdK = webpackModuleIdToKey(moduleId);
-  const patched = utils.memoizeProxy<any, [Map<string | null, WebpackPatch>, ...string[]]>(() => {
-    const p = __webpackPatchRegistry.get(moduleIdK);
-    return [p, ...(p?.keys() ?? [])];
-  }, (patchMap, ..._keys) => {
-    if (!patchMap)
-      return origModule;
 
-    let final = origModule;
-    let rootPatchData = patchMap.get(null);
-    if (rootPatchData) {
-      for (const p of rootPatchData.patches.values())
-        final = p(final);
+  /**
+   * We know this is static because we don't allow additional non-configurable props to be defined,
+   * and this proxy (and the module itself) holds the only reference to the original exports object
+   * (assuming that the patches play nice and don't touch it). Modules get a proxy to the original
+   * exports object that doesn't allow defining non-configurable props.
+   */
+  const nonConfigurableProps = Object.getOwnPropertyDescriptors(origModule);
+  for (const [k, v] of Object.entries(nonConfigurableProps))
+    if (!(v.configurable ?? true))
+      delete nonConfigurableProps[k];
+  Object.freeze(nonConfigurableProps);
+
+  /* Patched internal objects/props */
+  const patchCache = new Map<string | null, any>();
+  /* Proxies to props - these are only created once, never purged */
+  const propProxies = new Map<string, any>();
+  const propsWithGetters = new Set<string>();
+  let lastCanary = Symbol();
+  const patchedModule = { moduleId, origModule };
+  Object.freeze(patchedModule);
+
+  function invalidateCacheIfNeeded() {
+    const o = __webpackPatchCanaries.get(moduleIdK);
+    if (o && !Object.is(o, lastCanary)) {
+      lastCanary = o;
+      patchCache.clear();
     }
-    let overlays = [final];
-    for (const [k, v] of patchMap.entries()) {
-      if (k === null)
-        continue;
-      for (const p of v.patches.values()) {
-        const patched = p(final[k]);
-        overlays.push({ [k]: patched });
-      }
-    }
-    overlays.reverse();
-    return utils.overlayProxy(overlays);
-  });
-  /* mark as patched */
-  const patchedWithMark = new Proxy(patched, {
-    get(target, p, _receiver) {
-      if (p === "__patchedModule") {
-        return { moduleId, origModule };
-      }
-      return Reflect.get(target, p);
+  }
+
+  /* Retrieves a patched object possibly from cache */
+  function getPatched(key: string | null, original: () => any) {
+    const v = patchCache.get(key);
+    if (v)
+      return v;
+    /* patch */
+    let final = original();
+    const p = __webpackPatchRegistry.get(moduleIdK)?.get(key);
+    if (p)
+      for (const patch of p.patches.values())
+        final = patch(final);
+    patchCache.set(key, final);
+    return final;
+  }
+
+  /* Retrieves a prop proxy possibly from cache
+    If the original is not proxyable, returns it */
+  function getPropProxy(key: string, original: () => any) {
+    const v = propProxies.get(key);
+    if (v)
+      return v;
+    const orig = original();
+    if (typeof orig !== "object" || typeof orig !== "function")
+      return orig;
+    const orig2 = () => orig;
+
+    /* static */
+    const nonConfigurableProps = Object.getOwnPropertyDescriptors(orig);
+    for (const [k, v] of Object.entries(nonConfigurableProps))
+      if (!(v.configurable ?? true))
+        delete nonConfigurableProps[k];
+    Object.freeze(nonConfigurableProps);
+
+    const bindCache = new WeakMap();
+    const handler = {
+      apply: (_target, thiz, args) => {
+        invalidateCacheIfNeeded();
+        return Reflect.apply(getPatched(key, orig2), thiz, args);
+      },
+      construct: (_target, args, newTarget) => {
+        invalidateCacheIfNeeded();
+        return Reflect.construct(getPatched(key, orig2), args, newTarget);
+      },
+      defineProperty: (target, prop, attrs) => {
+        if (!(attrs?.configurable ?? true))
+          attrs.configurable = true;
+        patchCache.delete(key);
+        return Reflect.defineProperty(target, prop, attrs);
+      },
+      deleteProperty: (target, p) => {
+        patchCache.delete(key);
+        return Reflect.deleteProperty(target, p);
+      },
+      get: (target, p, _receiver) => {
+        if (typeof p !== "string" || p in nonConfigurableProps)
+          return Reflect.get(target, p);
+        invalidateCacheIfNeeded();
+        const x = Reflect.get(getPatched(key, orig2), p);
+        if (typeof x === "function")
+          if (bindCache.has(x))
+            return bindCache.get(x);
+          else try {
+            const x2 = x.bind(target);
+            bindCache.set(x, x2);
+            return x2;
+          } catch {};
+        return x;
+      },
+      getOwnPropertyDescriptor: (target, p) => {
+        if (typeof p === "string" && p in nonConfigurableProps)
+          return nonConfigurableProps[p];
+        invalidateCacheIfNeeded();
+        return Reflect.getOwnPropertyDescriptor(getPatched(key, orig2), p);
+      },
+      getPrototypeOf: (target) => {
+        invalidateCacheIfNeeded();
+        return Reflect.getPrototypeOf(getPatched(key, orig2));
+      },
+      has: (target, p) => {
+        if (p in nonConfigurableProps)
+          return true;
+
+        invalidateCacheIfNeeded();
+        return Reflect.has(getPatched(key, orig2), p);
+      },
+      /* isExtensible passed through */
+      ownKeys: (target) => {
+        invalidateCacheIfNeeded();
+        return Reflect.ownKeys(getPatched(key, orig2));
+      },
+      /* FIXME (?) */
+      preventExtensions: (target) => true,
+      set: (target, p, newValue, _receiver) => {
+        patchCache.clear();
+        return Reflect.set(target, p, newValue);
+      },
+      /* FIXME (?) */
+      setPrototypeOf: (target, v) => false,
+    } satisfies ProxyHandler<any>;
+    Object.freeze(handler);
+
+    const final = new Proxy(orig, handler);
+    propProxies.set(key, final);
+    return final;
+  }
+
+  const handler = {
+    apply: (target, thiz, args) => {
+      invalidateCacheIfNeeded();
+      return Reflect.apply(getPatched(null, () => target), thiz, args);
     },
-  });
-  const p = utils.setBouncerProxy(patchedWithMark, origModule, true);
-  /* patch defineProperty so that getters run patches */
-  return new Proxy(p, {
+    construct: (target, args, newTarget) => {
+      invalidateCacheIfNeeded();
+      return Reflect.construct(getPatched(null, () => target), args, newTarget);
+    },
     defineProperty: (target, prop, attrs) => {
-      if (attrs.get && typeof prop === "string") {
-        const origGet = attrs.get;
-        attrs.get = () => {
-          return utils.memoizeProxy<any, [any, WebpackPatch, ...string[]]>(() => {
-            const p = __webpackPatchRegistry.get(moduleIdK)?.get(prop);
-            return [origGet(), p, ...p.patches.keys()];
-          }, (orig, patch) => {
-            if (!patch)
-              return orig;
-
-            let final = orig;
-            for (const v of patch.patches.values())
-              final = v(final);
-            return final;
-          });
-        };
+      if (!(attrs?.configurable ?? true))
+        attrs.configurable = true;
+      ///* patch getter to return proxy */
+      if (typeof prop === "string" && attrs.get) {
+        const oldGet = attrs.get;
+        //getters.set(prop, oldGet);
+        //attrs.get = () => getGetterProxy(target, prop, true);
+        attrs.get = () => getPropProxy(prop, oldGet);
       }
-      return Reflect.defineProperty(target, prop, attrs);
+      patchCache.clear();
+      const r = Reflect.defineProperty(target, prop, attrs);
+      if (typeof prop === "string" && attrs.get && r)
+        propsWithGetters.add(prop);
+      return r;
     },
-  });
+    deleteProperty: (target, p) => {
+      patchCache.clear();
+      return Reflect.deleteProperty(target, p);
+    },
+    get: (target, p, _receiver) => {
+      //if (typeof p !== "string" || p in nonConfigurableProps)
+      //  return Reflect.get(target, p);
+      if (typeof p !== "string" || !(Reflect.getOwnPropertyDescriptor(target, p)?.configurable ?? true))
+        return Reflect.get(target, p);
+      if (p === "__patchedModule")
+        return patchedModule;
+
+      invalidateCacheIfNeeded();
+      /* Conjecture: props without getters are always accessed explicitly from the root export */
+      if (propsWithGetters.has(p))
+        // don't double patch
+        return Reflect.get(target, p);
+      else
+        return getPatched(p, () => Reflect.get(target, p));
+      //return getPropProxy(p, () => Reflect.get(target, p));
+    },
+    getOwnPropertyDescriptor: (target, p) => {
+      if (typeof p === "string" && p in nonConfigurableProps)
+        return nonConfigurableProps[p];
+      if (!(Reflect.getOwnPropertyDescriptor(target, p)?.configurable ?? true))
+        return Reflect.getOwnPropertyDescriptor(target, p);
+      invalidateCacheIfNeeded();
+      return Reflect.getOwnPropertyDescriptor(getPatched(null, () => target), p);
+    },
+    getPrototypeOf: (target) => {
+      invalidateCacheIfNeeded();
+      return Reflect.getPrototypeOf(getPatched(null, () => target));
+    },
+    has: (target, p) => {
+      if (p in nonConfigurableProps || p === "__patchedModule")
+        return true;
+      if (typeof p !== "string")
+        return Reflect.has(target, p);
+
+      invalidateCacheIfNeeded();
+      return Reflect.has(getPatched(null, () => target), p);
+    },
+    /* isExtensible passed through */
+    ownKeys: (target) => {
+      invalidateCacheIfNeeded();
+      return Reflect.ownKeys(getPatched(null, () => target));
+    },
+    /* preventExtensions passed through */
+    set: (target, p, newValue, _receiver) => {
+      patchCache.clear();
+      return Reflect.set(target, p, newValue);
+    },
+    setPrototypeOf: (target, v) => {
+      patchCache.clear();
+      return Reflect.setPrototypeOf(target, v);
+    },
+  } satisfies ProxyHandler<any>;
+  Object.freeze(handler);
+  return new Proxy(origModule, handler);
 }
 
 function makePatchingRequire(chunkName: string, r: _3type_webpack_require_type): _3type_webpack_require_type {
@@ -303,6 +470,8 @@ export function insertWebpackPatch<T = any>(exportId: WebpackExportId, name: str
     modulePatchMap.set(exp, { patches: new Map() });
   let exportPatchMap = modulePatchMap.get(exp);
   exportPatchMap.patches.set(name, patch);
+  /* invalidate */
+  __webpackPatchCanaries.set(moduleIdK, Symbol());
   return () => {
     deleteWebpackPatch(exportId, name);
   };
@@ -321,6 +490,8 @@ export function deleteWebpackPatch(exportId: WebpackExportId, name: string): boo
   const exportPatchMap = modulePatchMap.get(exp);
   if (!exportPatchMap)
     return false;
+  /* invalidate */
+  __webpackPatchCanaries.set(moduleIdK, Symbol());
   return exportPatchMap.patches.delete(name);
 }
 
@@ -453,6 +624,7 @@ let o = {
   __webpackModuleRegistry,
   __webpackMappings,
   __webpackPatchRegistry,
+  __webpackPatchCanaries,
   __webpackEarlyCatchers,
   _3type_hookWebpackChunkEarly,
   tryFindWebpackExport,
