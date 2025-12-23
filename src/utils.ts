@@ -4,7 +4,12 @@
 // Useful when early-binding to a late-bound object.
 // Attempting to modify the given Proxy is a no-op.
 export function forwardingProxy<T extends object = any>(thunk: () => T, hide: boolean = false, useFirst: boolean = false, initialValue: any = function() {}): T {
-  return new Proxy<T>(useFirst ? thunk() : initialValue as any, {
+  const initObj = useFirst ? thunk() : initialValue as any;
+  const initObjDescriptors = Object.getOwnPropertyDescriptors(initObj);
+  const nonConfigurableProps = Object.fromEntries(Object.entries(initObjDescriptors)
+    .filter(([_,v])=>!(v.configurable ?? true))
+    .map(([k,_])=>[k,initObj[k]]));
+  return new Proxy<T>(initObj, {
     apply: (target, thiz, args) => {
       const t = thunk() as any;
       //return Reflect.apply(target as any, t, args);
@@ -14,10 +19,13 @@ export function forwardingProxy<T extends object = any>(thunk: () => T, hide: bo
     defineProperty: (target, prop, attrs) => false,
     deleteProperty: (target, p) => false,
     get: (target, p, receiver) => {
-      const d = Reflect.getOwnPropertyDescriptor(target, p);
-      /* must return original if non-configurable */
-      if (!(d?.configurable ?? true))
-        return Reflect.get(target, p);
+      const x = nonConfigurableProps[p as any];
+      if (x)
+        return x;
+      //const d = Reflect.getOwnPropertyDescriptor(target, p);
+      ///* must return original if non-configurable */
+      //if (!(d?.configurable ?? true))
+      //  return Reflect.get(target, p);
       if (!hide) {
         if (p === "__isForwardedProxy") {
           return true;
@@ -28,17 +36,19 @@ export function forwardingProxy<T extends object = any>(thunk: () => T, hide: bo
       const t = thunk() as any;
       return Reflect.get(t, p, t);
     },
-    getOwnPropertyDescriptor: (target, p) => {
-      /* must return its descriptor */
-      if (Reflect.has(target, p))
-        return Reflect.getOwnPropertyDescriptor(target, p);
-      return Reflect.getOwnPropertyDescriptor(thunk(), p);
+    getOwnPropertyDescriptor: useFirst ? undefined : (target, p) => {
+      ///* must return its descriptor */
+      //if (Reflect.has(target, p))
+      //  return Reflect.getOwnPropertyDescriptor(target, p);
+      //return Reflect.getOwnPropertyDescriptor(thunk(), p);
+      //return initObjDescriptors[p as any] ?? Reflect.getOwnPropertyDescriptor(thunk(), p);
+      return Reflect.getOwnPropertyDescriptor(target, p) ?? Reflect.getOwnPropertyDescriptor(thunk(), p);
     },
-    getPrototypeOf: (target) => Reflect.getPrototypeOf(thunk()),
-    has: (target, p) => Reflect.has(thunk(), p),
+    getPrototypeOf: useFirst ? undefined : (target) => Reflect.getPrototypeOf(thunk()),
+    has: useFirst ? undefined : (target, p) => Reflect.has(thunk(), p),
     /* isExtensible must be passed through */
     //isExtensible: (target) => /* must be passed through */ Reflect false,
-    ownKeys: (target) => Reflect.ownKeys(thunk()),
+    ownKeys: useFirst ? undefined : (target) => Reflect.ownKeys(thunk()),
     preventExtensions: (target) => true,
     set: (target, p, newValue, receiver) => false,
     setPrototypeOf: (target, v) => false,
@@ -83,31 +93,7 @@ export function memoizeProxy<
  * !!! WARNING !!! This may cause inconsistent behavior
  */
 export function setBouncerProxy<T extends object = any>(target: T, setter: T, forceConfigurable: boolean = false): T {
-  //let bindCache = new WeakMap();
-  return new Proxy(target, {
-    // FIXME: is this needed?
-    //get(target, p, receiver) {
-    //  /* rebind functions that get called with this=receiver */
-    //  const x = Reflect.get(target, p);
-    //  if (false || typeof x === "function") {
-    //    if (bindCache.has(x))
-    //      return bindCache.get(x);
-    //    const px = new Proxy(x, {
-    //      apply: (target2, thiz, args) => {
-    //        if (thiz === receiver)
-    //          thiz = setter;
-    //        //if (thiz === target2)
-    //        //  thiz = x;
-    //        //if (thiz === receiver || thiz === target)
-    //        //  thiz = setter;
-    //        return Reflect.apply(x, thiz, args);
-    //      },
-    //    });
-    //    bindCache.set(x, px);
-    //    return px;
-    //  }
-    //  return x;
-    //},
+  const handler = {
     defineProperty: (_target, prop, attrs) => {
       if (forceConfigurable)
         attrs.configurable = true;
@@ -117,7 +103,9 @@ export function setBouncerProxy<T extends object = any>(target: T, setter: T, fo
     isExtensible: (_target) => Reflect.isExtensible(setter),
     preventExtensions: (_target) => Reflect.preventExtensions(setter),
     set: (_target, p, newValue, _receiver) => Reflect.set(setter, p, newValue),
-  });
+  } satisfies ProxyHandler<T>;
+  Object.freeze(handler);
+  return new Proxy(target, handler);
 }
 
 /**
