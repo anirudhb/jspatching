@@ -9,11 +9,12 @@ export type WebpackModuleId = {
   chunkName: string;
   moduleId: string;
 };
-export type WebpackExportId = {
+export type WebpackExportId<T = any> = {
   moduleId: WebpackModuleId;
   // null indicates top-level
   export: string | null;
 };
+export type WebpackImported<I extends WebpackExportId> = I extends WebpackExportId<infer T> ? T : never;
 
 // Require functions for 3type Webpack chunks, keyed by chunk name
 let __3type_webpackRequires = new Map<string, _3type_webpack_require_type>();
@@ -125,7 +126,7 @@ export function _3type_hookWebpackChunkEarly(chunkName: string, patches: _3type_
  * Retrieves an object by its export id given the 3type require function.
  * Does not check the chunk name!
  */
-function _3type_requireWebpackExport(r: _3type_webpack_require_type, id: WebpackExportId): any | null {
+function _3type_requireWebpackExport<T = any>(r: _3type_webpack_require_type, id: WebpackExportId<T>): T | null {
   // Get the module
   const m = r(id.moduleId.moduleId);
   if (!m)
@@ -163,7 +164,7 @@ function _3type_populateWebpackRequire(chunkName: string): _3type_webpack_requir
   return r;
 }
 
-export type WebpackMatcher = (m: any) => boolean;
+export type WebpackMatcher<T = any> = (m: any) => boolean;
 /**
  * Finds an export ID on an existing 3type Webpack chunk.
  */

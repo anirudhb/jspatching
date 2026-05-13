@@ -1,5 +1,7 @@
 /** React hooking tools */
 
+import { WebpackMatcher } from "./webpack";
+
 /*
  * Tries to find the name of the given React component/whatever.
  */
@@ -21,12 +23,24 @@ export function getComponentName(c: any): string | null {
  * Imbues the given component with the patched name of the "original" component.
  * Modifies the object in place.
  */
-export function patchedComponent<T>(orig: any, component: T): T {
+export function patchedComponent<const T extends React.FC>(orig: T, component: T): T {
   const n = getComponentName(orig);
   if (n)
     (component as any).displayName = `Patched(${n})`;
   return component;
 }
+
+/**
+ * Creates a Webpack matcher typed for a React component with the given props type.
+ */
+export function componentMatcher<P extends {} = {}>(name: string): WebpackMatcher<React.FC<P>> {
+  return (m: any) => getComponentName(m) === name;
+}
+
+/**
+ * Webpack matcher for React
+ */
+export const ReactMatcher: WebpackMatcher<typeof import("react")> = (m: any) => !!m?.createElement;
 
 /** Expose on window */
 let o = {
