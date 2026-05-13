@@ -8,6 +8,7 @@
 export type WebpackModuleId = {
   chunkName: string;
   moduleId: string;
+  chunkIds: string[];
 };
 export type WebpackExportId<T = any> = {
   moduleId: WebpackModuleId;
@@ -173,7 +174,7 @@ function _3type_tryFindWebpackExportId(chunkName: string, filter: WebpackMatcher
 function _3type_tryFindWebpackExportId(chunkName: string, filter: WebpackMatcher, all: boolean = false): WebpackExportId[] | WebpackExportId | null {
   if (!globalThis[chunkName])
     return null;
-  const chunk = globalThis[chunkName] as [never, Record<string, any>, never][];
+  const chunk = globalThis[chunkName] as [string[], Record<string, any>, Function][];
 
   const r = _3type_populateWebpackRequire(chunkName);
   if (!r)
@@ -189,6 +190,7 @@ function _3type_tryFindWebpackExportId(chunkName: string, filter: WebpackMatcher
         const mid = {
           chunkName,
           moduleId,
+          chunkIds: chunk2[0],
         } satisfies WebpackModuleId;
         if (filter(m))
           candidates.push({
