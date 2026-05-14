@@ -23,7 +23,7 @@ export function getComponentName(c: any): string | null {
  * Imbues the given component with the patched name of the "original" component.
  * Modifies the object in place.
  */
-export function patchedComponent<const T extends React.FC>(orig: T, component: T): T {
+export function patchedComponent<P extends {} = {}>(orig: React.FC<P>, component: React.FC<P>): React.FC<P> {
   const n = getComponentName(orig);
   if (n)
     (component as any).displayName = `Patched(${n})`;
