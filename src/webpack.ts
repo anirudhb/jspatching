@@ -15,7 +15,11 @@ export type WebpackExportId<T = any> = {
   // null indicates top-level
   export: string | null;
 };
-export type WebpackImported<I extends WebpackExportId> = I extends WebpackExportId<infer T> ? T : never;
+export type WebpackImported<I extends WebpackMatcher | WebpackExportId> = I extends WebpackExportId<infer T>
+  ? T
+  : I extends WebpackMatcher<infer T>
+    ? T
+    : never;
 
 // Require functions for 3type Webpack chunks, keyed by chunk name
 let __3type_webpackRequires = new Map<string, _3type_webpack_require_type>();
@@ -145,7 +149,7 @@ export const requireWebpackExport: typeof _3type_requireWebpackExport = _3type_r
  * No-op if the chunk does not exist or the require is already populated.
  * Returns the new function.
  */
-function _3type_populateWebpackRequire(chunkName: string): _3type_webpack_require_type | null {
+export function _3type_populateWebpackRequire(chunkName: string): _3type_webpack_require_type | null {
   if (__3type_webpackRequires.has(chunkName))
     return __3type_webpackRequires.get(chunkName);
   if (!globalThis[chunkName])
