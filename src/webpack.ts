@@ -169,6 +169,13 @@ export function _3type_populateWebpackRequire(chunkName: string): _3type_webpack
   return r;
 }
 
+/**
+ * Clears the 3type require cache for the given chunk name.
+ */
+export function _3type_clearWebpackRequire(chunkName: string) {
+  __3type_webpackRequires.delete(chunkName);
+}
+
 export type WebpackMatcher<T = any> = (m: any) => boolean;
 /**
  * Finds an export ID on an existing 3type Webpack chunk.
