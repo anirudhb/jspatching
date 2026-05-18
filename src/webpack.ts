@@ -36,7 +36,7 @@ export type _3type_webpack_require_type = (n: any) => any;
  * exports seems to only have getters (citation needed), if there is a "default" export it will be module.exports
  */
 export type _3type_webpack_module_function = (module: any, exports: any, require: _3type_webpack_require_type) => void;
-type _3type_WebpackPushArg = [
+export type _3type_WebpackPushArg = [
   /* chunk ids */ string[],
   /* modules */ Record<string, _3type_webpack_module_function>,
   /* init */ (require: _3type_webpack_require_type) => void,
@@ -52,8 +52,9 @@ export type _3type_WebpackPatch = {
  * Hooking function for 3-type webpack chunks (early).
  * If globalThis[chunkName] is already defined, this is a no-op.
  * Applies the given patches.
+ * Pushes the given new modules when the push function is assigned.
  */
-export function _3type_hookWebpackChunkEarly(chunkName: string, patches: _3type_WebpackPatch[]) {
+export function _3type_hookWebpackChunkEarly(chunkName: string, patches: _3type_WebpackPatch[], newModules?: _3type_WebpackPushArg[]) {
   if (globalThis[chunkName])
     return;
 
@@ -68,6 +69,7 @@ export function _3type_hookWebpackChunkEarly(chunkName: string, patches: _3type_
   let a = [];
   let webpackPush: (...args: any[]) => any | null = null;
   let origPush: typeof Array.prototype.push = a.push.bind(a);
+  let didPushNewModules = false;
 
   function push2(...elements: _3type_WebpackPushArg[]): number {
     let count = 0;
@@ -122,6 +124,11 @@ export function _3type_hookWebpackChunkEarly(chunkName: string, patches: _3type_
       if (p !== "push")
         return Reflect.set(target, p, newValue);
       webpackPush = newValue;
+      /* push new modules */
+      if (!didPushNewModules) {
+        didPushNewModules = true;
+        push2(...newModules);
+      }
       return true;
     },
   });
