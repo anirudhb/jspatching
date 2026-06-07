@@ -42,6 +42,11 @@ export function componentMatcher<P extends {} = {}>(name: string): WebpackMatche
  */
 export const ReactMatcher: WebpackMatcher<typeof import("react")> = (m: any) => !!m?.createElement && typeof m.version === "string";
 
+/**
+ * Webpack matcher for React's jsx-runtime
+ */
+export const ReactJsxMatcher: WebpackMatcher<typeof import("react/jsx-runtime")> = (m: any) => !!m?.jsx && !!m?.jsxs && !m?.name;
+
 /** Expose on window */
 let o = {
   getComponentName,
