@@ -183,7 +183,10 @@ export function _3type_clearWebpackRequire(chunkName: string) {
   __3type_webpackRequires.delete(chunkName);
 }
 
-export type WebpackMatcher<T = any> = (m: any) => boolean;
+export type WebpackMatcher<T = any> = ((m: any) => boolean) & {
+  all?: boolean;
+};
+
 /**
  * Finds an export ID on an existing 3type Webpack chunk.
  */

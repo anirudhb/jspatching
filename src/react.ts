@@ -40,7 +40,7 @@ export function componentMatcher<P extends {} = {}>(name: string): WebpackMatche
 /**
  * Webpack matcher for React
  */
-export const ReactMatcher: WebpackMatcher<typeof import("react")> = (m: any) => !!m?.createElement;
+export const ReactMatcher: WebpackMatcher<typeof import("react")> = (m: any) => !!m?.createElement && typeof m.version === "string";
 
 /** Expose on window */
 let o = {
