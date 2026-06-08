@@ -54,5 +54,5 @@ let o = {
 };
 
 for (const [k, v] of Object.entries(o)) {
-  globalThis["react$" + k] = v;
+  (globalThis as any)["react$" + k] = v;
 }

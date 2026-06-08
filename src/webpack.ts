@@ -14,6 +14,7 @@ export type WebpackExportId<T = any> = {
   moduleId: WebpackModuleId;
   // null indicates top-level
   export: string | null;
+  _reserved?: T;
 };
 export type WebpackImported<I extends WebpackMatcher | WebpackExportId> = I extends WebpackExportId<infer T>
   ? T
@@ -23,8 +24,8 @@ export type WebpackImported<I extends WebpackMatcher | WebpackExportId> = I exte
 
 // Require functions for 3type Webpack chunks, keyed by chunk name
 let __3type_webpackRequires = new Map<string, _3type_webpack_require_type>();
-if (globalThis.__3type_webpackRequires)
-  __3type_webpackRequires = globalThis.__3type_webpackRequires;
+if ((globalThis as any).__3type_webpackRequires)
+  __3type_webpackRequires = (globalThis as any).__3type_webpackRequires;
 
 export type _3type_webpack_require_type = (n: any) => any;
 /**
@@ -55,7 +56,7 @@ export type _3type_WebpackPatch = {
  * Pushes the given new modules when the push function is assigned.
  */
 export function _3type_hookWebpackChunkEarly(chunkName: string, patches: _3type_WebpackPatch[], newModules?: _3type_WebpackPushArg[]) {
-  if (globalThis[chunkName])
+  if ((globalThis as any)[chunkName])
     return;
 
   // sort patches by module id
@@ -63,11 +64,11 @@ export function _3type_hookWebpackChunkEarly(chunkName: string, patches: _3type_
   for (const p of patches) {
     if (!patchesById.has(p.moduleId))
       patchesById.set(p.moduleId, []);
-    patchesById.get(p.moduleId).push(p);
+    patchesById.get(p.moduleId)!.push(p);
   }
 
-  let a = [];
-  let webpackPush: (...args: any[]) => any | null = null;
+  let a: any[] = [];
+  let webpackPush: (...args: any[]) => any | null;// = null;
   let origPush: typeof Array.prototype.push = a.push.bind(a);
   let didPushNewModules = false;
 
@@ -114,7 +115,7 @@ export function _3type_hookWebpackChunkEarly(chunkName: string, patches: _3type_
     return count;
   }
 
-  globalThis[chunkName] = new Proxy(a, {
+  (globalThis as any)[chunkName] = new Proxy(a, {
     get(target, p, _receiver) {
       if (p !== "push")
         return Reflect.get(target, p);
@@ -127,7 +128,7 @@ export function _3type_hookWebpackChunkEarly(chunkName: string, patches: _3type_
       /* push new modules */
       if (!didPushNewModules) {
         didPushNewModules = true;
-        push2(...newModules);
+        push2(...(newModules ?? []));
       }
       return true;
     },
@@ -158,22 +159,22 @@ export const requireWebpackExport: typeof _3type_requireWebpackExport = _3type_r
  */
 export function _3type_populateWebpackRequire(chunkName: string): _3type_webpack_require_type | null {
   if (__3type_webpackRequires.has(chunkName))
-    return __3type_webpackRequires.get(chunkName);
-  if (!globalThis[chunkName])
+    return __3type_webpackRequires.get(chunkName)!;
+  if (!(globalThis as any)[chunkName])
     return null;
 
-  const chunk = globalThis[chunkName] as ({
+  const chunk = (globalThis as any)[chunkName] as ({
     push(arg: _3type_WebpackPushArg): void;
   });
-  let r: _3type_webpack_require_type;
+  let r: _3type_webpack_require_type | null = null;
   chunk.push([
     [`1337_jspatching_${Math.random()}`],
     // FIXME: should we actually stub a dummy module here?
     {},
     (_require) => r = _require,
   ]);
-  __3type_webpackRequires.set(chunkName, r);
-  return r;
+  __3type_webpackRequires.set(chunkName, r!);
+  return r!;
 }
 
 /**
@@ -194,9 +195,9 @@ export type WebpackMatcher<T = any> = ((m: any) => boolean) & {
 function _3type_tryFindWebpackExportId(chunkName: string, filter: WebpackMatcher, all: true) : WebpackExportId[];
 function _3type_tryFindWebpackExportId(chunkName: string, filter: WebpackMatcher, all?: boolean): WebpackExportId | null;
 function _3type_tryFindWebpackExportId(chunkName: string, filter: WebpackMatcher, all: boolean = false): WebpackExportId[] | WebpackExportId | null {
-  if (!globalThis[chunkName])
+  if (!(globalThis as any)[chunkName])
     return null;
-  const chunk = globalThis[chunkName] as [string[], Record<string, any>, Function][];
+  const chunk = (globalThis as any)[chunkName] as [string[], Record<string, any>, Function][];
 
   const r = _3type_populateWebpackRequire(chunkName);
   if (!r)
@@ -247,5 +248,5 @@ let o = {
 };
 
 for (const [k, v] of Object.entries(o)) {
-  globalThis[k] = v;
+  (globalThis as any)[k] = v;
 }

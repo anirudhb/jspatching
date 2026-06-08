@@ -6,8 +6,8 @@
     "lib": ["es2024", "dom"],
     "moduleResolution": "bundler",
     "jsx": "react",
-    "jsxFactory": "globalThis.React.createElement",
-    "jsxFragmentFactory": "globalThis.React.Fragment",
+    "noImplicitAny": true,
+    "strictNullChecks": true,
     "composite": true
   },
   "include": ["src/**/*"]
