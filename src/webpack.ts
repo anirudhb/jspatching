@@ -185,6 +185,7 @@ export function _3type_clearWebpackRequire(chunkName: string) {
 
 export type WebpackMatcher<T = any> = ((m: any) => boolean) & {
   all?: boolean;
+  _reserved?: T;
 };
 
 /**
