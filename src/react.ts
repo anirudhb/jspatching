@@ -2,6 +2,21 @@
 
 import { WebpackMatcher } from "./webpack";
 
+/**
+ * Determines if a function is a constructor
+ * Source: https://stackoverflow.com/a/48036194
+ */
+function isConstructor(f: Function): boolean {
+  const handler = {
+    construct: () => handler,
+  };
+  try {
+    return !!(new (new Proxy(f, handler) as any)());
+  } catch {
+    return false;
+  }
+}
+
 /*
  * Tries to find the name of the given React component/whatever.
  */
@@ -11,6 +26,8 @@ export function getComponentName(c: any): string | null {
 
   if (c.displayName)
     return c.displayName || null;
+  if (typeof c === "function" && isConstructor(c))
+    return c.name;
   if (c.$$typeof === Symbol.for("react.memo"))
     return getComponentName(c.type);
   if (c.$$typeof === Symbol.for("react.forward_ref"))
